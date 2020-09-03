@@ -8,42 +8,55 @@ import uuid
 
 import cv2
 from aiohttp import web
-from av import VideoFrame,AudioFrame
+from aiohttp_requests import requests
+from av import VideoFrame, AudioFrame
 from av.frame import Frame
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder
 import time
-import fractions
+# import fractions
 
-from mtcnn.mtcnn import MTCNN
+# from mtcnn.mtcnn import MTCNN
 
 import torch
 from fast_mtcnn import FastMTCNN
 from face_emb import get_face_net
 import tensorflow as tf
 import numpy as np
+from util.resampler import Resampler
+from util.audio_utils import stft, fast_stft, istft, fast_istft
+import base64
+#import requests
 
 
 AUDIO_PTIME = 0.020  # 20ms audio packetization
 
-
 ROOT = os.path.dirname(__file__)
 
-
-
 logger = logging.getLogger("pc")
+
 pcs = set()
+dcs = set()
 
 
+class BatchCommunicator:
+    '''Used to share batch data from Audio stream processor to video stream processor'''
+
+    def __init__(self, audio_steps=50):
+        self.audio_steps = audio_steps
+        self.is_batch_ready = False
+        self.audio_array = None
+        self.right_window_time = 0.0
+        self.left_window_time = 0.0
 
 
 class MediaStreamError(Exception):
     pass
 
 
-class MyAudioStreamTrack(MediaStreamTrack):
+class AudioTransformTrack(MediaStreamTrack):
     """
-    A dummy audio track which reads silence.
+    Process audio input
     """
 
     kind = "audio"
@@ -51,10 +64,14 @@ class MyAudioStreamTrack(MediaStreamTrack):
     _start: float
     _timestamp: int
 
-    def __init__(self, track):
+    def __init__(self, track, comm, max_audio_interval=3.0):
         super().__init__()  # don't forget this!
         self.track = track
-
+        self.communicator = comm
+        self.left_window_time = 0.0
+        self.right_window_time = 0.0
+        self.curr_batch_array = None
+        self.max_audio_interval = max_audio_interval
 
     async def recv(self) -> Frame:
         """
@@ -66,28 +83,48 @@ class MyAudioStreamTrack(MediaStreamTrack):
             raise MediaStreamError
 
         frame = await self.track.recv()
-        print("Audio input: {:6.2f}".format(frame.time))
         audio = frame.to_ndarray()
-        return frame
 
-        sample_rate = 8000
-        samples = int(AUDIO_PTIME * sample_rate)
-
-        if hasattr(self, "_timestamp"):
-            self._timestamp += samples
-            wait = self._start + (self._timestamp / sample_rate) - time.time()
-            await asyncio.sleep(wait)
+        if self.curr_batch_array is None:
+            self.curr_batch_array = audio
         else:
-            self._start = time.time()
-            self._timestamp = 0
+            # need to  be optimized
+            self.curr_batch_array = np.concatenate((self.curr_batch_array, audio), axis=None)
 
-        frame = AudioFrame(format="s16", layout="mono", samples=samples)
-        for p in frame.planes:
-            p.update(bytes(p.buffer_size))
-        frame.pts = self._timestamp
-        frame.sample_rate = sample_rate
-        frame.time_base = fractions.Fraction(1, sample_rate)
+        self.right_window_time = frame.time
+        if self.right_window_time - self.left_window_time >= self.max_audio_interval:  # 3 sec of audio
+            self.communicator.is_batch_ready = True
+            # 96000 is ugly, will fix later
+            safe_arr_len = min(len(self.curr_batch_array), 96000)
+            self.communicator.audio_array = self.curr_batch_array[-safe_arr_len:].copy()
+            self.curr_batch_array = None
+            self.communicator.left_window_time = self.left_window_time
+            self.communicator.right_window_time = self.right_window_time
+            self.left_window_time = self.right_window_time
+
+        print("Audio input: {:6.2f}".format(frame.time))
+
         return frame
+
+        # sample_rate = 8000
+        # samples = int(AUDIO_PTIME * sample_rate)
+
+        # if hasattr(self, "_timestamp"):
+        # self._timestamp += samples
+        # wait = self._start + (self._timestamp / sample_rate) - time.time()
+        # await asyncio.sleep(wait)
+        # else:
+        # self._start = time.time()
+        # self._timestamp = 0
+
+        # frame = AudioFrame(format="s16", layout="mono", samples=samples)
+        # for p in frame.planes:
+        # p.update(bytes(p.buffer_size))
+        # frame.pts = self._timestamp
+        # frame.sample_rate = sample_rate
+        # frame.time_base = fractions.Fraction(1, sample_rate)
+        # return frame
+
 
 class VideoTransformTrack(MediaStreamTrack):
     """
@@ -96,29 +133,33 @@ class VideoTransformTrack(MediaStreamTrack):
 
     kind = "video"
 
-    def __init__(self, track, transform):
+    def __init__(self, track, comm, transform, speech_container):
         super().__init__()  # don't forget this!
         self.track = track
+        self.communicator = comm
         self.transform = transform
         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         self.detector = FastMTCNN(
-        stride=4,
-        resize=1,
-        margin=14,
-        factor=0.6,
-        keep_all=True,
-        device=self.device
-        #,post_process=False
-        )#MTCNN()
+            stride=4,
+            resize=1,
+            margin=14,
+            factor=0.6,
+            keep_all=True,
+            device=self.device
+            # ,post_process=False
+        )  # MTCNN()
         with tf.device('/device:gpu:1'):
-           self.face_net = get_face_net()
-
-        self.face_net_batch = np.zeros((75, 160, 160, 3), dtype='float')
+            self.face_net = get_face_net()
+        # memory pre-allocation
+        self.face_net_batch = np.zeros((100, 160, 160, 3), dtype='float')
         self.video_timestamps = []
+        self.frame_counter = 0
+        self.speech_container = speech_container
 
     async def recv(self):
         frame = await self.track.recv()
         print("Video input: {:6.2f}".format(frame.time))
+        self.frame_counter += 1
         if self.transform == "cartoon":
             img = frame.to_ndarray(format="bgr24")
 
@@ -180,40 +221,77 @@ class VideoTransformTrack(MediaStreamTrack):
                 print("Some face detected")
                 bounding_box = faces[0]['box']
                 crop_img = img[bounding_box[1]:bounding_box[1] + bounding_box[3],
-                       bounding_box[0]:bounding_box[0] + bounding_box[2]]
+                           bounding_box[0]:bounding_box[0] + bounding_box[2]]
                 crop_img = cv2.resize(crop_img, (160, 160))
-                ##cv2.imwrite('%s/frame_' % '.jpg', crop_img)
+                # cv2.imwrite('%s/frame_' % '.jpg', crop_img)
                 new_frame = VideoFrame.from_ndarray(crop_img, format="bgr24")
                 new_frame.pts = frame.pts
                 new_frame.time_base = frame.time_base
-                return new_frame ##new_frame
+                return new_frame
             else:
                 return frame
             # check if detected faces
-            #face = await blazeFaceService(frame)
+            # face = await blazeFaceService(frame)
         elif self.transform == "fast_face_detect":
             frames = []
             img = frame.to_ndarray(format="bgr24")
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            # Need to investigate what format face detector is expecting ,
+            # what it returns and what format FaceNet is expecting
+            # img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             print("Image converted.")
             frames.append(img)
             start = time.time()
+            # here one frame is sent for detection, but detector is optimized specifically
+            # for multiple frames.
             faces = self.detector(frames)
             print("Detector run")
+            # Here just one face is taken into account, but multiple faces
+            # could be potentially concatenated into single batch
             if len(faces) > 0 and all(faces[0].shape) > 0:
                 print("Show faces!")
                 print(faces[0].shape)
                 faces[0] = cv2.resize(faces[0], (160, 160))
-                self.video_timestamps.append(frame.pts)
-                index = len(self.video_timestamps) - 1
-                self.face_net_batch[index, :, :, :] = faces[0]
-                if index == 74:
-                    print("Batch processing run.")
-                    #do batch embedding and resampling here
+                self.video_timestamps.append(frame.time)
+                ind = len(self.video_timestamps) - 1
+                self.face_net_batch[ind, :, :, :] = faces[0]
+                if self.communicator.is_batch_ready:
+                    print("Batch processing triggered.")
+                    # do batch embedding and resampling here
                     with tf.device('/device:gpu:1'):
-                        output_batch = self.face_net.predict(self.face_net_batch)
-                    #here do resampling with output_batch
-                    self.video_timestamps = []
+                        # output_batch = self.face_net.predict(np.stack(self.face_net_batch, axis=0))
+                        # BTW, we can integrate multiple faces into one batch, just keep indexes
+                        # of their positions
+                        output_emb = self.face_net.predict(self.face_net_batch)
+                        output_emb = output_emb[:ind + 1]
+                    # do resampling with output_batch here
+                    sampler = Resampler(np.array(self.video_timestamps), output_emb.T)
+                    sampling_grid = np.linspace(self.communicator.left_window_time,
+                                                self.communicator.right_window_time, 75)
+                    resampled_emb = sampler.resample(sampling_grid).T
+                    print(resampled_emb.shape)
+                    # grab audio, transform it to stft and send everything
+                    # to the next step down the line
+                    audio = fast_stft(self.communicator.audio_array)
+                    print("Shape of the audio and video:")
+                    print(audio.shape)
+                    # send a fake request to remote model, which could represent the rest of pipeline
+                    #SERVER_URL = 'http://localhost:8501/v1/models/half_plus_two:predict'
+                    SERVER_URL = 'http://localhost:5000/api'# for testing
+                    predict_request = '{"instances": [' + str(self.frame_counter) + ']}'
+                    response = await requests.post(SERVER_URL, data=predict_request)
+                    #response = requests.post(SERVER_URL, data=predict_request)
+                    #response.raise_for_status()
+                    #prediction = response.json()['predictions'][0]
+                    prediction = await response.text()# for testing
+                    #prediction = response.text  # for testing
+                    self.speech_container.text = str(prediction)
+                    print(len(self.video_timestamps))
+                    #due to asynchronous call to long running procedure
+                    #I want to preserve the last frame and the last timestamp
+                    self.video_timestamps = [self.video_timestamps[-1]]
+                    self.face_net_batch[0, :, :, :] = self.face_net_batch[ind, :, :, :]
+                    self.communicator.is_batch_ready = False
+                    # self.speech_container.text = "Hello" + str(self.frame_counter)
 
                 # rebuild a VideoFrame, preserving timing information
                 new_frame = VideoFrame.from_ndarray(faces[0], format="bgr24")
@@ -227,6 +305,20 @@ class VideoTransformTrack(MediaStreamTrack):
             return frame
 
 
+class SpeechContainer:
+    def __init__(self, text="PONG"):
+        self.text = text
+
+    def clear(self):
+        self.text = ""
+
+
+speech_container = SpeechContainer()
+
+
+communicator = BatchCommunicator()
+
+
 async def index(request):
     content = open(os.path.join(ROOT, "index.html"), "r").read()
     return web.Response(content_type="text/html", text=content)
@@ -235,6 +327,8 @@ async def index(request):
 async def javascript(request):
     content = open(os.path.join(ROOT, "client.js"), "r").read()
     return web.Response(content_type="application/javascript", text=content)
+
+
 
 
 async def offer(request):
@@ -262,7 +356,8 @@ async def offer(request):
         @channel.on("message")
         def on_message(message):
             if isinstance(message, str) and message.startswith("ping"):
-                channel.send("pong" + message[4:])
+                channel.send(speech_container.text)
+                speech_container.clear()
 
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
@@ -276,13 +371,15 @@ async def offer(request):
         log_info("Track %s received", track.kind)
 
         if track.kind == "audio":
-            local_audio = MyAudioStreamTrack(track)
-            #pc.addTrack(player.audio)
-            #recorder.addTrack(track)
+            local_audio = AudioTransformTrack(track, communicator)
+            # pc.addTrack(player.audio)
+            # recorder.addTrack(track)
             pc.addTrack(local_audio)
         elif track.kind == "video":
             local_video = VideoTransformTrack(
-                track, transform=params["video_transform"]
+                track, communicator,
+                transform=params["video_transform"],
+                speech_container=speech_container
             )
             pc.addTrack(local_video)
 
