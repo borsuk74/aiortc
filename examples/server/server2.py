@@ -8,7 +8,7 @@ import uuid
 
 import cv2
 from aiohttp import web
-from aiohttp_requests import requests
+#from aiohttp_requests import requests
 from av import VideoFrame, AudioFrame
 from av.frame import Frame
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
@@ -26,7 +26,10 @@ import numpy as np
 from util.resampler import Resampler
 from util.audio_utils import stft, fast_stft, istft, fast_istft
 import base64
-#import requests
+import requests
+
+""""This version doesn't work, because loop = asyncio.get_event_loop() 
+generates runtime error when executed not in the MainThread, which is the case here."""
 
 
 AUDIO_PTIME = 0.020  # 20ms audio packetization
@@ -47,6 +50,40 @@ class BatchCommunicator:
         self.audio_array = None
         self.right_window_time = 0.0
         self.left_window_time = 0.0
+
+def speech_callback(speech_data):
+    ''' Hack that uses 'protected' fields to send
+    results back to the client  over the data channel '''
+    global pcs
+    pc = pcs[0]
+    if pc is not None:
+        # I need to send data back, here is a hack
+        channel = next(iter(pc.sctp._data_channels.values()))
+        if channel is not None:
+            channel.send(speech_data)
+
+
+#https://stackoverflow.com/questions/52526353/asynchronous-python-fire-and-forget-http-request
+def background(f):
+    from functools import wraps
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        loop = asyncio.get_event_loop()
+        if callable(f):
+            return loop.run_in_executor(None, f, *args, **kwargs)
+            #return asyncio.run(f(*args, **kwargs))
+        else:
+            raise TypeError('Task must be a callable')
+    return wrapped
+
+@background
+def send_and_forget(host_name, data, callback):
+    response = requests.post(host_name, data=data)
+    response.raise_for_status()
+    prediction = response.text  # for testing
+    callback(str(prediction))
+
+
 
 
 class MediaStreamError(Exception):
@@ -126,6 +163,7 @@ class AudioTransformTrack(MediaStreamTrack):
 
 
 class VideoTransformTrack(MediaStreamTrack):
+
     """
     A video stream track that transforms frames from an another track.
     """
@@ -277,20 +315,18 @@ class VideoTransformTrack(MediaStreamTrack):
                     #SERVER_URL = 'http://localhost:8501/v1/models/half_plus_two:predict'
                     SERVER_URL = 'http://localhost:5000/api'# for testing
                     predict_request = '{"instances": [' + str(self.frame_counter) + ']}'
-                    response = await requests.post(SERVER_URL, data=predict_request)
+                    send_and_forget(SERVER_URL, predict_request, speech_callback)
+                    #response = await requests.post(SERVER_URL, data=predict_request)
                     #response = requests.post(SERVER_URL, data=predict_request)
                     #response.raise_for_status()
                     #prediction = response.json()['predictions'][0]
-                    prediction = await response.text()# for testing
+                    #prediction = await response.text()# for testing
                     #prediction = response.text  # for testing
                     #response is sent to the client
-                    speech_callback(str(prediction))
+                    #speech_callback(str(prediction))
                     #self.speech_container.text = str(prediction)
                     print(len(self.video_timestamps))
-                    #due to asynchronous call to long running procedure
-                    #I want to preserve the last frame and the last timestamp
-                    self.video_timestamps = [self.video_timestamps[-1]]
-                    self.face_net_batch[0, :, :, :] = self.face_net_batch[ind, :, :, :]
+                    self.video_timestamps = []
                     self.communicator.is_batch_ready = False
                     # self.speech_container.text = "Hello" + str(self.frame_counter)
 
@@ -306,21 +342,14 @@ class VideoTransformTrack(MediaStreamTrack):
             return frame
 
 
-class SpeechContainer:
-    def __init__(self, text="PONG"):
-        self.text = text
+#class SpeechContainer:
+    #def __init__(self, text="PONG"):
+        #self.text = text
 
-    def clear(self):
-        self.text = ""
+    #def clear(self):
+        #self.text = ""
 
-def speech_callback(speech_data):
-    global pcs
-    pc = pcs[0]
-    if pc is not None:
-        # I need to send data back, here is a hack
-        channel = next(iter(pc.sctp._data_channels.values()))
-        if channel is not None:
-            channel.send(speech_data)
+
 
 
 

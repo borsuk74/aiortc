@@ -35,7 +35,7 @@ def api():
     app.logger.info("api_input: " + str(input_data))
     output_data = "web response:" + str(input_data) #model_api(input_data)
     app.logger.info("api_output: " + str(output_data))
-    time.sleep(0.25)
+    time.sleep(2)
     response = jsonify(output_data)
     return response
 

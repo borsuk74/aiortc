@@ -8,15 +8,11 @@ import uuid
 
 import cv2
 from aiohttp import web
-from aiohttp_requests import requests
 from av import VideoFrame, AudioFrame
 from av.frame import Frame
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder
 import time
-# import fractions
-
-# from mtcnn.mtcnn import MTCNN
 
 import torch
 from fast_mtcnn import FastMTCNN
@@ -25,9 +21,14 @@ import tensorflow as tf
 import numpy as np
 from util.resampler import Resampler
 from util.audio_utils import stft, fast_stft, istft, fast_istft
-import base64
-#import requests
 
+# New way of doing things
+import grpc
+import test_servers.primefactor_pb2
+import test_servers.primefactor_pb2_grpc
+from threading import Thread, Lock, Condition
+
+""""This version works, the only deficiency is pull request from the client."""
 
 AUDIO_PTIME = 0.020  # 20ms audio packetization
 
@@ -36,6 +37,16 @@ ROOT = os.path.dirname(__file__)
 logger = logging.getLogger("pc")
 
 pcs = []
+
+"""Demonstrates Producer/Consumer design with Consumer running on a separate thread."""
+
+request_lock = Lock()
+response_lock = Lock()
+condition = Condition()
+# For simplicity queues will contain numbers
+request_queue = []
+response_queue = []
+MAX_QUEUE_LEN = 20  # it should never happen
 
 
 class BatchCommunicator:
@@ -47,6 +58,43 @@ class BatchCommunicator:
         self.audio_array = None
         self.right_window_time = 0.0
         self.left_window_time = 0.0
+
+
+def speech_callback_enqueue(speech_data):
+    ''' Hack that uses 'protected' fields to send
+    results back to the client  over the data channel '''
+    global response_queue
+    response_lock.acquire()
+    response_queue.append(speech_data)
+    response_lock.release()
+
+
+def run(generator_fn):
+    """ Run on a separate thread, part of double stream grpc service"""
+    channel = grpc.insecure_channel('localhost:50052')
+    stub = test_servers.primefactor_pb2_grpc.FactorsStub(channel)
+    # it = stub.PrimeFactors(gen())
+    it = stub.PrimeFactors(generator_fn())
+    try:
+        for r in it:
+            speech_callback_enqueue(f"Prime factor = {r.result}")
+            # print(f"Prime factor = {r.result}")
+    except grpc._channel._Rendezvous as err:
+        print(err)
+
+
+def gen_request():
+    global request_queue
+    while True:
+        condition.acquire()
+        if not request_queue:
+            print("Nothing in queue, consumer is waiting")
+            condition.wait()
+            print("Producer added something to queue and notified the consumer")
+        num = request_queue.pop(0)
+        yield test_servers.primefactor_pb2.Request(num=num)
+        condition.notify()
+        condition.release()
 
 
 class MediaStreamError(Exception):
@@ -105,25 +153,6 @@ class AudioTransformTrack(MediaStreamTrack):
 
         return frame
 
-        # sample_rate = 8000
-        # samples = int(AUDIO_PTIME * sample_rate)
-
-        # if hasattr(self, "_timestamp"):
-        # self._timestamp += samples
-        # wait = self._start + (self._timestamp / sample_rate) - time.time()
-        # await asyncio.sleep(wait)
-        # else:
-        # self._start = time.time()
-        # self._timestamp = 0
-
-        # frame = AudioFrame(format="s16", layout="mono", samples=samples)
-        # for p in frame.planes:
-        # p.update(bytes(p.buffer_size))
-        # frame.pts = self._timestamp
-        # frame.sample_rate = sample_rate
-        # frame.time_base = fractions.Fraction(1, sample_rate)
-        # return frame
-
 
 class VideoTransformTrack(MediaStreamTrack):
     """
@@ -145,15 +174,13 @@ class VideoTransformTrack(MediaStreamTrack):
             factor=0.6,
             keep_all=True,
             device=self.device
-            # ,post_process=False
-        )  # MTCNN()
+        )
         with tf.device('/device:gpu:1'):
             self.face_net = get_face_net()
         # memory pre-allocation
         self.face_net_batch = np.zeros((100, 160, 160, 3), dtype='float')
         self.video_timestamps = []
         self.frame_counter = 0
-        #self.speech_container = speech_container
 
     async def recv(self):
         frame = await self.track.recv()
@@ -245,10 +272,9 @@ class VideoTransformTrack(MediaStreamTrack):
             faces = self.detector(frames)
             print("Detector run")
             # Here just one face is taken into account, but multiple faces
-            # could be potentially concatenated into single batch
+            # could be potentially handled by concatenation into single batch
             if len(faces) > 0 and all(faces[0].shape) > 0:
-                print("Show faces!")
-                print(faces[0].shape)
+
                 faces[0] = cv2.resize(faces[0], (160, 160))
                 self.video_timestamps.append(frame.time)
                 ind = len(self.video_timestamps) - 1
@@ -274,23 +300,17 @@ class VideoTransformTrack(MediaStreamTrack):
                     print("Shape of the audio and video:")
                     print(audio.shape)
                     # send a fake request to remote model, which could represent the rest of pipeline
-                    #SERVER_URL = 'http://localhost:8501/v1/models/half_plus_two:predict'
-                    SERVER_URL = 'http://localhost:5000/api'# for testing
-                    predict_request = '{"instances": [' + str(self.frame_counter) + ']}'
-                    response = await requests.post(SERVER_URL, data=predict_request)
-                    #response = requests.post(SERVER_URL, data=predict_request)
-                    #response.raise_for_status()
-                    #prediction = response.json()['predictions'][0]
-                    prediction = await response.text()# for testing
-                    #prediction = response.text  # for testing
-                    #response is sent to the client
-                    speech_callback(str(prediction))
-                    #self.speech_container.text = str(prediction)
+                    condition.acquire()
+                    if len(request_queue) == MAX_QUEUE_LEN:
+                        print("Queue full, producer is waiting")
+                        condition.wait()
+                    # in reality should be batch data
+                    request_queue.append(self.frame_counter % 25)
+                    condition.notify()
+                    condition.release()
+
                     print(len(self.video_timestamps))
-                    #due to asynchronous call to long running procedure
-                    #I want to preserve the last frame and the last timestamp
-                    self.video_timestamps = [self.video_timestamps[-1]]
-                    self.face_net_batch[0, :, :, :] = self.face_net_batch[ind, :, :, :]
+                    self.video_timestamps = []
                     self.communicator.is_batch_ready = False
                     # self.speech_container.text = "Hello" + str(self.frame_counter)
 
@@ -306,27 +326,6 @@ class VideoTransformTrack(MediaStreamTrack):
             return frame
 
 
-class SpeechContainer:
-    def __init__(self, text="PONG"):
-        self.text = text
-
-    def clear(self):
-        self.text = ""
-
-def speech_callback(speech_data):
-    global pcs
-    pc = pcs[0]
-    if pc is not None:
-        # I need to send data back, here is a hack
-        channel = next(iter(pc.sctp._data_channels.values()))
-        if channel is not None:
-            channel.send(speech_data)
-
-
-
-#speech_container = SpeechContainer()
-
-
 communicator = BatchCommunicator()
 
 
@@ -338,8 +337,6 @@ async def index(request):
 async def javascript(request):
     content = open(os.path.join(ROOT, "client.js"), "r").read()
     return web.Response(content_type="application/javascript", text=content)
-
-
 
 
 async def offer(request):
@@ -366,10 +363,15 @@ async def offer(request):
     def on_datachannel(channel):
         @channel.on("message")
         def on_message(message):
-            pass
-            #if isinstance(message, str) and message.startswith("ping"):
-                #channel.send(speech_container.text)
-                #speech_container.clear()
+            global response_queue
+            # it will grab all available results from the queue
+            # and send them to the client. It will be pull, not push(
+            # but on the right thread
+            response_lock.acquire()
+            while len(response_queue) > 0:
+                result = response_queue.pop(0)
+                channel.send(result)
+            response_lock.release()
 
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange():
@@ -384,14 +386,11 @@ async def offer(request):
 
         if track.kind == "audio":
             local_audio = AudioTransformTrack(track, communicator)
-            # pc.addTrack(player.audio)
-            # recorder.addTrack(track)
             pc.addTrack(local_audio)
         elif track.kind == "video":
             local_video = VideoTransformTrack(
                 track, communicator,
                 transform=params["video_transform"]
-                #,speech_container=speech_container
             )
             pc.addTrack(local_video)
 
@@ -450,6 +449,9 @@ if __name__ == "__main__":
     else:
         ssl_context = None
 
+    thread = Thread(target=run, args=(gen_request,))
+    thread.start()
+
     app = web.Application()
     app.on_shutdown.append(on_shutdown)
     app.router.add_get("/", index)
@@ -458,3 +460,4 @@ if __name__ == "__main__":
     web.run_app(
         app, access_log=None, host=args.host, port=args.port, ssl_context=ssl_context
     )
+    thread.join()

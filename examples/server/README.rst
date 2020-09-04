@@ -43,6 +43,23 @@ If you want to enable verbose logging, run:
 
     $ python server.py -v
 
+Generate gRPC code for server and client
+----------------------------------------
+
+We are going to use gRPC to generate libraries for Go and Python 3.
+To generate the Go code, you'll need to install  protoc_.
+
+.. _protoc: https://github.com/google/protobuf/#protocol-compiler-installation
+
+.. code-block:: bash
+
+ # Python client
+ $ pip3 install -U grpcio grpcio-tools
+ $ python3 -m grpc_tools.protoc -I protobuf/ --python_out=. --grpc_python_out=. protobuf/primefactor.proto
+ # Go
+ $ protoc -I protobuf/ --go_out=plugins=grpc:protobuf/ protobuf/primefactor.proto
+
+
 Credits
 -------
 

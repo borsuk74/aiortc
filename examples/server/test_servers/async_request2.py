@@ -3,13 +3,18 @@ import time
 #from aiohttp_requests import requests
 import requests
 
-'''This one is working'''
+'''This one is working, it demonstrates a concept of sending request asynchronously
+and fire some callback when got response back. Works because mainThread contains a loop'''
 
 def background(f):
     from functools import wraps
     @wraps(f)
     def wrapped(*args, **kwargs):
+        # works
         loop = asyncio.get_event_loop()
+        # This version works as well
+        #loop = asyncio.new_event_loop()
+        #asyncio.set_event_loop(loop)
         if callable(f):
             return loop.run_in_executor(None, f, *args, **kwargs)
         else:
@@ -19,7 +24,7 @@ def background(f):
 
 @background
 def send_and_forget(host_name, data, callback):
-    response = requests.post(SERVER_URL, data=predict_request)
+    response = requests.post(host_name, data=data)
     response.raise_for_status()
     prediction = response.text  # for testing
     callback(str(time.time())+prediction)
