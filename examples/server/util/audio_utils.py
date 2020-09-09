@@ -19,15 +19,16 @@ def stft(data, fft_size=512, step=160, padding=True):
 
 
 def istft(M, fft_size=512, step=160, padding=True):
-    data = np.fft.ifft(M, axis=-1)
+    #it should be fixed here everywhere
+    data = np.fft.irfft(M, axis=-1)
     windows = np.concatenate((np.zeros((56,)), np.hanning(fft_size - 112), np.zeros((56,))), axis=0)
     windows_num = M.shape[0]
-    Total = np.zeros((windows * step + fft_size))
+    Total = np.zeros((windows_num * step + fft_size))
     for i in range(windows_num):
         start = int(i * step)
         end = int(start + fft_size)
-        Total[start:end] = Total[start:end] + data[i:] * windows
-    if padding == True:
+        Total[start:end] = Total[start:end] + data[i,:] * windows
+    if padding:
         Total = Total[:48000]
 
     return Total

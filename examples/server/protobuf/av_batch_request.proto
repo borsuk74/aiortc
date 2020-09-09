@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package av_batch;
+
+option java_package = "com.proto.av_batch";
+option java_multiple_files = true;
+
+message AVBatchRequest{
+  int64 timeStamp = 1;
+  int64 numSpeakers =2;
+  bytes videoContent = 3;
+  bytes audioContent = 4;
+  //ideally it should contain the shape of the batch
+  //and bytes fields should be repeated
+}
+
+message AVBatchResponse{
+  int64 num = 1;
+}
+
+service AVBatchService {
+  //2 stream API
+  rpc SendAVBatch(stream AVBatchRequest) returns (stream AVBatchResponse) {}
+}
