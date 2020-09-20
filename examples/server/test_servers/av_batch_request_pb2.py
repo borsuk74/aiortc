@@ -20,7 +20,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   package='av_batch',
   syntax='proto3',
   serialized_options=_b('\n\022com.proto.av_batchP\001'),
-  serialized_pb=_b('\n\x16\x61v_batch_request.proto\x12\x08\x61v_batch\"d\n\x0e\x41VBatchRequest\x12\x11\n\ttimeStamp\x18\x01 \x01(\x03\x12\x13\n\x0bnumSpeakers\x18\x02 \x01(\x03\x12\x14\n\x0cvideoContent\x18\x03 \x01(\x0c\x12\x14\n\x0c\x61udioContent\x18\x04 \x01(\x0c\"\x1e\n\x0f\x41VBatchResponse\x12\x0b\n\x03num\x18\x01 \x01(\x03\x32Z\n\x0e\x41VBatchService\x12H\n\x0bSendAVBatch\x12\x18.av_batch.AVBatchRequest\x1a\x19.av_batch.AVBatchResponse\"\x00(\x01\x30\x01\x42\x16\n\x12\x63om.proto.av_batchP\x01\x62\x06proto3')
+  serialized_pb=_b('\n\x16\x61v_batch_request.proto\x12\x08\x61v_batch\"d\n\x0e\x41VBatchRequest\x12\x11\n\ttimeStamp\x18\x01 \x01(\x03\x12\x13\n\x0bnumSpeakers\x18\x02 \x01(\x03\x12\x14\n\x0cvideoContent\x18\x03 \x01(\x0c\x12\x14\n\x0c\x61udioContent\x18\x04 \x01(\x0c\"\x1e\n\x0f\x41VBatchResponse\x12\x0b\n\x03num\x18\x01 \x01(\x03\x32\x9e\x01\n\x0e\x41VBatchService\x12H\n\x0bSendAVBatch\x12\x18.av_batch.AVBatchRequest\x1a\x19.av_batch.AVBatchResponse\"\x00(\x01\x30\x01\x12\x42\n\tSendAVOne\x12\x18.av_batch.AVBatchRequest\x1a\x19.av_batch.AVBatchResponse\"\x00\x42\x16\n\x12\x63om.proto.av_batchP\x01\x62\x06proto3')
 )
 
 
@@ -135,13 +135,22 @@ _AVBATCHSERVICE = _descriptor.ServiceDescriptor(
   file=DESCRIPTOR,
   index=0,
   serialized_options=None,
-  serialized_start=170,
-  serialized_end=260,
+  serialized_start=171,
+  serialized_end=329,
   methods=[
   _descriptor.MethodDescriptor(
     name='SendAVBatch',
     full_name='av_batch.AVBatchService.SendAVBatch',
     index=0,
+    containing_service=None,
+    input_type=_AVBATCHREQUEST,
+    output_type=_AVBATCHRESPONSE,
+    serialized_options=None,
+  ),
+  _descriptor.MethodDescriptor(
+    name='SendAVOne',
+    full_name='av_batch.AVBatchService.SendAVOne',
+    index=1,
     containing_service=None,
     input_type=_AVBATCHREQUEST,
     output_type=_AVBATCHRESPONSE,

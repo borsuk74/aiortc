@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package speech_back;
+
+option java_package = "com.proto.speech_back";
+option java_multiple_files = true;
+
+message SpeechRequest{
+  int64 timeStamp = 1;
+}
+
+message SpeechResponse{
+  int64 num = 1;
+}
+
+service SpeechBackService {
+  //2 stream API
+  rpc SendSpeechStream(stream SpeechRequest) returns (stream SpeechResponse) {}
+  //OneCall API
+  rpc SendSpeechOne( SpeechRequest) returns ( SpeechResponse) {}
+}
+

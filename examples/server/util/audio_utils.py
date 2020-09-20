@@ -125,3 +125,16 @@ def fast_icRM(Y, crm, K=10, C=0.1):
     S[:, :, 0] = np.multiply(M[:, :, 0], Y[:, :, 0]) - np.multiply(M[:, :, 1], Y[:, :, 1])
     S[:, :, 1] = np.multiply(M[:, :, 0], Y[:, :, 1]) + np.multiply(M[:, :, 1], Y[:, :, 0])
     return S
+
+def convert_toPyAudio(data):
+    if data.dtype == 'float32' or data.dtype == 'float64':
+        max_y = np.max(np.abs(data))
+    elif data.dtype == 'uint8':
+        data = data - 128
+        max_y = 128
+    elif data.dtype == 'int16':
+        max_y = np.abs(np.iinfo(np.int16).min)
+    else:
+        max_y = np.abs(np.iinfo(np.int16).min)
+    data = np.int16(data / max_y * np.abs(np.iinfo(np.int16).min))
+    return data

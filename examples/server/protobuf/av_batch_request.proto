@@ -21,4 +21,7 @@ message AVBatchResponse{
 service AVBatchService {
   //2 stream API
   rpc SendAVBatch(stream AVBatchRequest) returns (stream AVBatchResponse) {}
+  //OneCall API
+  rpc SendAVOne( AVBatchRequest) returns ( AVBatchResponse) {}
 }
+

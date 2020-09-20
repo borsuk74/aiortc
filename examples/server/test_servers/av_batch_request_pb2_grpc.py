@@ -19,6 +19,11 @@ class AVBatchServiceStub(object):
         request_serializer=av__batch__request__pb2.AVBatchRequest.SerializeToString,
         response_deserializer=av__batch__request__pb2.AVBatchResponse.FromString,
         )
+    self.SendAVOne = channel.unary_unary(
+        '/av_batch.AVBatchService/SendAVOne',
+        request_serializer=av__batch__request__pb2.AVBatchRequest.SerializeToString,
+        response_deserializer=av__batch__request__pb2.AVBatchResponse.FromString,
+        )
 
 
 class AVBatchServiceServicer(object):
@@ -32,11 +37,23 @@ class AVBatchServiceServicer(object):
     context.set_details('Method not implemented!')
     raise NotImplementedError('Method not implemented!')
 
+  def SendAVOne(self, request, context):
+    """OneCall API
+    """
+    context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+    context.set_details('Method not implemented!')
+    raise NotImplementedError('Method not implemented!')
+
 
 def add_AVBatchServiceServicer_to_server(servicer, server):
   rpc_method_handlers = {
       'SendAVBatch': grpc.stream_stream_rpc_method_handler(
           servicer.SendAVBatch,
+          request_deserializer=av__batch__request__pb2.AVBatchRequest.FromString,
+          response_serializer=av__batch__request__pb2.AVBatchResponse.SerializeToString,
+      ),
+      'SendAVOne': grpc.unary_unary_rpc_method_handler(
+          servicer.SendAVOne,
           request_deserializer=av__batch__request__pb2.AVBatchRequest.FromString,
           response_serializer=av__batch__request__pb2.AVBatchResponse.SerializeToString,
       ),

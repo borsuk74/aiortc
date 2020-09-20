@@ -10,16 +10,22 @@ import time
 class PrimeFactorService(primefactor_pb2_grpc.FactorsServicer):
 
     def PrimeFactors(self, request_iterator, context):
+        start = time.time()
+        print("Request in PrimeFactor")
         for req in request_iterator:
             factors = prime_factors(req.num)
+            print(factors)
             for fac in factors:
+                print(f"Before sending { fac } time is { time.time()}")
                 yield primefactor_pb2.Response(result=fac)
+        print("Server run for: ")
+        print(time.time() - start)
 
 
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     primefactor_pb2_grpc.add_FactorsServicer_to_server(PrimeFactorService(), server)
-    server.add_insecure_port('[::]:50052')
+    server.add_insecure_port('[::]:50089')
     server.start()
     server.wait_for_termination()
 
@@ -40,7 +46,7 @@ def prime_factors(n):
 
 if __name__ == '__main__':
     try:
-        print('Server running on port: 50052')
+        print('Server running on port: 50089')
         serve()
     except KeyboardInterrupt:
         pass
